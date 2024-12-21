@@ -4,25 +4,46 @@ import (
 	"os"
 	P "path"
 	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/metacubex/mihomo/common/utils"
+	"github.com/metacubex/mihomo/constant/features"
 )
 
-const Name = "clash"
+const Name = "mihomo"
+
+var (
+	GeositeName = "GeoSite.dat"
+	GeoipName   = "GeoIP.dat"
+	ASNName     = "ASN.mmdb"
+)
 
 // Path is used to get the configuration path
+//
+// on Unix systems, `$HOME/.config/mihomo`.
+// on Windows, `%USERPROFILE%/.config/mihomo`.
 var Path = func() *path {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		homeDir, _ = os.Getwd()
 	}
-
+	allowUnsafePath, _ := strconv.ParseBool(os.Getenv("SKIP_SAFE_PATH_CHECK"))
 	homeDir = P.Join(homeDir, ".config", Name)
-	return &path{homeDir: homeDir, configFile: "config.yaml"}
+
+	if _, err = os.Stat(homeDir); err != nil {
+		if configHome, ok := os.LookupEnv("XDG_CONFIG_HOME"); ok {
+			homeDir = P.Join(configHome, Name)
+		}
+	}
+
+	return &path{homeDir: homeDir, configFile: "config.yaml", allowUnsafePath: allowUnsafePath}
 }()
 
 type path struct {
-	homeDir    string
-	configFile string
-	scriptDir  string
+	homeDir         string
+	configFile      string
+	allowUnsafePath bool
 }
 
 // SetHomeDir is used to set the configuration path
@@ -48,12 +69,68 @@ func (p *path) Resolve(path string) string {
 	if !filepath.IsAbs(path) {
 		return filepath.Join(p.HomeDir(), path)
 	}
-
 	return path
 }
 
+// IsSafePath return true if path is a subpath of homedir
+func (p *path) IsSafePath(path string) bool {
+	if p.allowUnsafePath || features.CMFA {
+		return true
+	}
+	homedir := p.HomeDir()
+	path = p.Resolve(path)
+	rel, err := filepath.Rel(homedir, path)
+	if err != nil {
+		return false
+	}
+
+	return !strings.Contains(rel, "..")
+}
+
+func (p *path) GetPathByHash(prefix, name string) string {
+	hash := utils.MakeHash([]byte(name))
+	filename := hash.String()
+	return filepath.Join(p.HomeDir(), prefix, filename)
+}
+
 func (p *path) MMDB() string {
-	return P.Join(p.homeDir, "Country.mmdb")
+	files, err := os.ReadDir(p.homeDir)
+	if err != nil {
+		return ""
+	}
+	for _, fi := range files {
+		if fi.IsDir() {
+			// 目录则直接跳过
+			continue
+		} else {
+			if strings.EqualFold(fi.Name(), "Country.mmdb") ||
+				strings.EqualFold(fi.Name(), "geoip.db") ||
+				strings.EqualFold(fi.Name(), "geoip.metadb") {
+				GeoipName = fi.Name()
+				return P.Join(p.homeDir, fi.Name())
+			}
+		}
+	}
+	return P.Join(p.homeDir, "geoip.metadb")
+}
+
+func (p *path) ASN() string {
+	files, err := os.ReadDir(p.homeDir)
+	if err != nil {
+		return ""
+	}
+	for _, fi := range files {
+		if fi.IsDir() {
+			// 目录则直接跳过
+			continue
+		} else {
+			if strings.EqualFold(fi.Name(), "ASN.mmdb") {
+				ASNName = fi.Name()
+				return P.Join(p.homeDir, fi.Name())
+			}
+		}
+	}
+	return P.Join(p.homeDir, ASNName)
 }
 
 func (p *path) OldCache() string {
@@ -65,28 +142,41 @@ func (p *path) Cache() string {
 }
 
 func (p *path) GeoIP() string {
-	return P.Join(p.homeDir, "geoip.dat")
+	files, err := os.ReadDir(p.homeDir)
+	if err != nil {
+		return ""
+	}
+	for _, fi := range files {
+		if fi.IsDir() {
+			// 目录则直接跳过
+			continue
+		} else {
+			if strings.EqualFold(fi.Name(), "GeoIP.dat") {
+				GeoipName = fi.Name()
+				return P.Join(p.homeDir, fi.Name())
+			}
+		}
+	}
+	return P.Join(p.homeDir, "GeoIP.dat")
 }
 
 func (p *path) GeoSite() string {
-	return P.Join(p.homeDir, "geosite.dat")
-}
-
-func (p *path) ScriptDir() string {
-	if len(p.scriptDir) != 0 {
-		return p.scriptDir
+	files, err := os.ReadDir(p.homeDir)
+	if err != nil {
+		return ""
 	}
-	if dir, err := os.MkdirTemp("", Name+"-"); err == nil {
-		p.scriptDir = dir
-	} else {
-		p.scriptDir = P.Join(os.TempDir(), Name)
-		_ = os.MkdirAll(p.scriptDir, 0o644)
+	for _, fi := range files {
+		if fi.IsDir() {
+			// 目录则直接跳过
+			continue
+		} else {
+			if strings.EqualFold(fi.Name(), "GeoSite.dat") {
+				GeositeName = fi.Name()
+				return P.Join(p.homeDir, fi.Name())
+			}
+		}
 	}
-	return p.scriptDir
-}
-
-func (p *path) Script() string {
-	return P.Join(p.ScriptDir(), "clash_script.py")
+	return P.Join(p.homeDir, "GeoSite.dat")
 }
 
 func (p *path) GetAssetLocation(file string) string {
@@ -96,7 +186,7 @@ func (p *path) GetAssetLocation(file string) string {
 func (p *path) GetExecutableFullPath() string {
 	exePath, err := os.Executable()
 	if err != nil {
-		return "clash"
+		return "mihomo"
 	}
 	res, _ := filepath.EvalSymlinks(exePath)
 	return res
